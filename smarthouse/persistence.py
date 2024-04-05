@@ -1,9 +1,10 @@
 import sqlite3
 from typing import Optional
-from smarthouse.domain import SmartHouse
-from smarthouse.domain import Device
 from smarthouse.domain import Measurement
-from smarthouse.domain import Actuator
+from smarthouse.domain import SmartHouse, Sensor, Actuator, ActuatorWithSensor
+from .domain import NewSensorMeasurement
+
+
 
 
 
@@ -15,10 +16,12 @@ class SmartHouseRepository:
 
     def __init__(self, file: str) -> None:
         self.file = file
-        self.conn = sqlite3.connect(file)
+        self.conn = sqlite3.connect(file, check_same_thread=False)
+
 
     def __del__(self):
-        self.conn.close()
+        if self.conn:
+            self.conn.close()
 
     def cursor(self) -> sqlite3.Cursor:
         """
@@ -30,45 +33,111 @@ class SmartHouseRepository:
         return self.conn.cursor()
 
     def reconnect(self):
-        self.conn.close()
-        self.conn = sqlite3.connect(self.file)
+        if self.conn:
+            self.conn.close()
+        self.conn = sqlite3.connect(self.file, check_same_thread=False)
+
+    def get_device_by_id(self, device_id: str):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, room, kind, category, supplier, product FROM devices WHERE id = ?", (device_id,))
+        row = cursor.fetchone()
+        cursor.close()
+        if row:
+            device_id, room_id, kind, category, supplier, product = row
+            # Assuming 'kind' or 'category' determines the type of device
+            if category == 'sensor':
+                return Sensor(id=device_id, model_name=product, supplier=supplier, device_type=kind)
+            elif category == 'actuator':
+                # Check additional conditions if needed for ActuatorWithSensor
+                return Actuator(id=device_id, model_name=product, supplier=supplier, device_type=kind)
+            # Add more conditions if you have other types like ActuatorWithSensor
+        return None
+
+    def add_measurement_to_sensor(self, sensor_id: str, measurement: NewSensorMeasurement):
+        cursor = self.conn.cursor()
+        cursor.execute("INSERT INTO measurements (device, value, unit, ts) VALUES (?, ?, ?, datetime('now'))",
+                       (sensor_id, measurement.value, measurement.unit))
+        self.conn.commit()
+        cursor.close()
+
+    def delete_oldest_measurement(self, sensor_id: str):
+        """
+        Deletes the oldest measurement for the given sensor.
+        """
+        delete_sql = """
+        DELETE FROM measurements
+        WHERE rowid IN (
+          SELECT rowid FROM measurements
+          WHERE device = ?
+          ORDER BY ts ASC
+          LIMIT 1
+        );
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(delete_sql, (sensor_id,))
+        self.conn.commit()
+        cursor.close()
 
 
     def load_smarthouse_deep(self):
         """
-        This method retrives the complete single instance of the _SmartHouse_
+        This method retrieves the complete single instance of the _SmartHouse_
         object stored in this database. The retrieval yields a _deep_ copy, i.e.
         all referenced objects within the object structure (e.g. floors, rooms, devices)
         are retrieved as well.
         """
-        # TODO: START here! remove the following stub implementation and implement this function
-        #       by retrieving the data from the database via SQL `SELECT` statements.
-        # Oppretter et tomt smarthus
-        smart_house = SmartHouse()
+        result = SmartHouse()
+        cursor = self.cursor()
 
-        cursor = self.cursor() #kobler til databasen
+        # Creating floors
+        cursor.execute('SELECT MAX(floor) from rooms;')
+        no_floors = cursor.fetchone()[0]
+        floors = []
+        for i in range(0, no_floors):
+            floors.append(result.register_floor(i + 1))
 
-        cursor.execute("SELECT id, name, area, floor FROM rooms") #henter fra databasen ved sql kode
-        rooms_data = cursor.fetchall()
+        # Creating rooms
+        room_dict = {}
+        cursor.execute('SELECT id, floor, area, name from rooms;')
+        room_tuples = cursor.fetchall()
+        for room_tuple in room_tuples:
+            room = result.register_room(floors[int(room_tuple[1]) - 1], float(room_tuple[2]), room_tuple[3])
+            room.db_id = int(room_tuple[0])
+            room_dict[room_tuple[0]] = room
 
-         #Itererer gjennom rommene og registrerer hvert rom i huset, og tilhørende etasje
-        for room_id, room_name, room_size, floor_id in rooms_data:
-            floor = smart_house.register_floor(floor_id)
-            room = smart_house.register_room(floor, room_size, room_name)
+        cursor.execute('SELECT id, room, kind, category, supplier, product from devices;')
+        device_tuples = cursor.fetchall()
+        for device_tuple in device_tuples:
+            room = room_dict[device_tuple[1]]
+            category = device_tuple[3]
+            if category == 'sensor':
+                result.register_device(room, Sensor(device_tuple[0], device_tuple[5], device_tuple[4], device_tuple[2]))
+            elif category == 'actuator':
+                if device_tuple[2] == 'Heat Pump':
+                    result.register_device(room, ActuatorWithSensor(device_tuple[0], device_tuple[5], device_tuple[4],
+                                                                    device_tuple[2]))
+                else:
+                    result.register_device(room,
+                                           Actuator(device_tuple[0], device_tuple[5], device_tuple[4], device_tuple[2]))
 
-        cursor.execute("SELECT id, room, kind, category, supplier FROM devices")
-        device_data = cursor.fetchall()
-
-        #identifiserer aktuatorer
-        for device_id, room_id, model_name,device_type, supplier in device_data:
-            if device_type == "actuator":
-                device = Actuator(device_id, model_name, device_type, supplier)
-            else:
-                device = Device(device_id, model_name, device_type, supplier)
-            smart_house.register_device(room, device)
+        for dev in result.get_devices():
+            if isinstance(dev, Actuator):
+                cursor.execute(f"SELECT state FROM states where device = '{dev.id}';")
+                state_result = cursor.fetchone()
+                if state_result is not None:
+                    state = state_result[0]
+                    if state is None:
+                        dev.turn_off()
+                    elif float(state) == 1.0:
+                        dev.turn_on()
+                    else:
+                        dev.turn_on(float(state))
+                else:
+                    # Handle case where no state is found for the device
+                    print(f"No state found for device {dev.id}")
 
         cursor.close()
-        return smart_house
+        return result
 
     def get_latest_reading(self, sensor) -> Optional[Measurement]:
         """
