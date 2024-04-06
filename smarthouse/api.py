@@ -6,9 +6,10 @@ from smarthouse.persistence import SmartHouseRepository
 from pathlib import Path
 from pydantic import BaseModel
 from typing import List, Optional
-from typing import Union
-from fastapi import HTTPException, Body, Query
+from typing import Union, Dict
+from fastapi import HTTPException, Body, Query, APIRouter
 from smarthouse.domain import Sensor
+from smarthouse.domain import Actuator
 
 
 import os
@@ -18,6 +19,7 @@ def setup_database():
     return SmartHouseRepository(str(db_file.absolute()))
 
 app = FastAPI()
+router = APIRouter()
 
 repo = setup_database()
 
@@ -98,6 +100,9 @@ class NewSensorMeasurement(BaseModel):
     value: float
     unit: str
 
+class ActuatorStateModel(BaseModel):
+    state: bool
+
 
 @app.get("/smarthouse/floor", response_model=List[FloorModel])
 def get_floors():
@@ -123,7 +128,7 @@ def get_rooms(fid: int):
         raise HTTPException(status_code=404, detail="Floor not found")
     return [RoomModel(room_name=room.room_name, room_size=room.room_size, devices=[device.id for device in room.devices]) for room in floor.rooms]
 
-# Information about a specific room rid on a given floor fid
+#Informasjon på et spesifikt rom
 @app.get("/smarthouse/floor/{fid}/room/{rid}", response_model=RoomModel)
 def get_room(fid: int, rid: str):
     floor = next((f for f in smarthouse.get_floors() if f.level == fid), None)
@@ -134,12 +139,12 @@ def get_room(fid: int, rid: str):
         raise HTTPException(status_code=404, detail="Room not found")
     return RoomModel(room_name=room.room_name, room_size=room.room_size, devices=[device.id for device in room.devices])
 
-# Information on all devices
+# Informasjon på alle devices
 @app.get("/smarthouse/device", response_model=List[DeviceModel])
 def get_devices():
     return [DeviceModel(id=device.id, model_name=device.model_name, device_type=device.get_device_type(), supplier=device.supplier) for device in smarthouse.get_devices()]
 
-# Information for a given device identified by uuid
+#Hente info på device
 @app.get("/smarthouse/device/{uuid}", response_model=Union[SensorModel, ActuatorModel])
 def get_device(uuid: str):
     device = smarthouse.get_device_by_id(uuid)
@@ -152,7 +157,7 @@ def get_device(uuid: str):
     else:
         raise HTTPException(status_code=400, detail="Device type unknown")
 
-# Get current sensor measurement
+#Hente nåværende måling for sensor
 @app.get("/smarthouse/sensor/{uuid}/current")
 def get_current_sensor_measurement(uuid: str):
     sensor = repo.get_device_by_id(uuid)
@@ -163,7 +168,7 @@ def get_current_sensor_measurement(uuid: str):
         raise HTTPException(status_code=404, detail="Latest reading not found")
     return latest_reading
 
-# Add a new measurement for sensor
+#Legge til ny måling for sensor
 @app.post("/smarthouse/sensor/{uuid}/current")
 def add_measurement_for_sensor(uuid: str, measurement: NewSensorMeasurement):
     sensor = repo.get_device_by_id(uuid)
@@ -173,7 +178,7 @@ def add_measurement_for_sensor(uuid: str, measurement: NewSensorMeasurement):
     repo.add_measurement_to_sensor(sensor.id, measurement)
     return {"message": "Measurement added successfully"}
 
-# Get n latest available measurements for sensor
+#Hente siste måling fra sensor
 @app.get("/smarthouse/sensor/{uuid}/values", response_model=List[CurrentSensorMeasurement])
 def get_latest_sensor_measurements(uuid: str):
     sensor = repo.get_device_by_id(uuid)
@@ -187,7 +192,7 @@ def get_latest_sensor_measurements(uuid: str):
     return [CurrentSensorMeasurement(timestamp=latest_measurement.timestamp, value=latest_measurement.value,
                                      unit=latest_measurement.unit)]
 
-# Delete the oldest measurement for sensor
+# slette eldste måling for sensor
 
 @app.delete("/smarthouse/sensor/{uuid}/oldest")
 def delete_oldest_measurement_for_sensor(uuid: str):
@@ -197,6 +202,26 @@ def delete_oldest_measurement_for_sensor(uuid: str):
 
     repo.delete_oldest_measurement(sensor.id)
     return {"message": "Oldest measurement deleted successfully"}
+
+#Hente tilstand aktuator
+@app.get("/smarthouse/actuator/{uuid}/current")
+def get_current_actuator_state(uuid: str):
+    actuator_state = repo.get_actuator_state(uuid)
+    if actuator_state is None:
+        raise HTTPException(status_code=404, detail="Actuator not found")
+    return {"state": actuator_state}
+
+
+# oppdatere tilstand for en aktuator
+
+@app.post("/smarthouse/actuator/{uuid}/current")
+def update_actuator_state(uuid: str, state_model: ActuatorStateModel = Body(...)):
+    actuator = repo.get_device_by_id(uuid)
+    if not actuator:
+        raise HTTPException(status_code=404, detail="Actuator not found")
+
+    repo.update_actuator_state(actuator, state_model.state)
+    return {"message": "Actuator state updated successfully"}
 
 
 if __name__ == '__main__':

@@ -44,13 +44,10 @@ class SmartHouseRepository:
         cursor.close()
         if row:
             device_id, room_id, kind, category, supplier, product = row
-            # Assuming 'kind' or 'category' determines the type of device
             if category == 'sensor':
                 return Sensor(id=device_id, model_name=product, supplier=supplier, device_type=kind)
             elif category == 'actuator':
-                # Check additional conditions if needed for ActuatorWithSensor
                 return Actuator(id=device_id, model_name=product, supplier=supplier, device_type=kind)
-            # Add more conditions if you have other types like ActuatorWithSensor
         return None
 
     def add_measurement_to_sensor(self, sensor_id: str, measurement: NewSensorMeasurement):
@@ -162,39 +159,23 @@ class SmartHouseRepository:
 
         return None
 
-    def update_actuator_state(self, actuator):
-        """
-        Saves the state of the given actuator in the database. 
-        """
-        # TODO: Implement this method. You will probably need to extend the existing database structure: e.g.
-        #       by creating a new table (`CREATE`), adding some data to it (`INSERT`) first, and then issue
-        #       and SQL `UPDATE` statement. Remember also that you will have to call `commit()` on the `Connection`
-        #       stored in the `self.conn` instance variable.
-        if isinstance(actuator, Actuator):
-            cursor = self.conn.cursor()
-            #Lager en ny tabell som samler alle aktuatorene
-            cursor.execute('''CREATE TABLE IF NOT EXISTS actuators (
-                                                        id TEXT PRIMARY KEY,
-                                                        room TEXT,
-                                                        kind TEXT,
-                                                        category TEXT,
-                                                        supplier TEXT,
-                                                        state BOOLEAN
-                                                    )''')
+    def update_actuator_state(self, actuator, new_state: bool):
+        query = "UPDATE devices SET state = ? WHERE id = ?"
+        params = (1 if new_state else 0, actuator.id)
+        c = self.cursor()
+        c.execute(query, params)
+        self.conn.commit()
+        c.close()
 
-            #legger de ulike kolonnene med tilknyttede verdier for aktuatorene
-            cursor.execute('''INSERT OR REPLACE INTO actuators (id, room, kind, category, supplier, state)
-                                                        VALUES (?, ?, ?, ?, ?, ?)''',
-                           (actuator.id, actuator.room.room_name, actuator.model_name, actuator.get_device_type(),
-                            actuator.supplier,
-                            actuator.is_active()))
-
-            # Commiter til databasen
-            self.conn.commit()
-
-            cursor.close()
-        else:
-            print("Error: The given device is not an actuator.")
+    def get_actuator_state(self, actuator_id: str) -> Optional[bool]:
+        query = "SELECT state FROM devices WHERE id = ?"
+        cursor = self.conn.cursor()
+        cursor.execute(query, (actuator_id,))
+        row = cursor.fetchone()
+        cursor.close()
+        if row is not None:
+            return bool(row[0])
+        return None
 
 
     def calc_avg_temperatures_in_room(self, room, from_date: Optional[str] = None, until_date: Optional[str] = None) -> dict:

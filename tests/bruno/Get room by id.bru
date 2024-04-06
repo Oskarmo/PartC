@@ -5,7 +5,13 @@ meta {
 }
 
 get {
-  url: http://127.0.0.1:8000//smarthouse/floor/2/room/Office
+  url: http://127.0.0.1:8000/smarthouse/floor/2/room/Master Bedroom
   body: none
   auth: none
+}
+
+assert {
+  res.body.room_name: eq Master Bedroom
+  res.body.room_size: eq 17
+  res.body.devices: contains c1e8fa9c-4b8d-487a-a1a5-2b148ee9d2d1
 }
